@@ -154,7 +154,7 @@ import os
 
 import json
 def load_config(key=None):
-	path = os.path.join('TO/YOUR/PATH', 'config.cfg')
+	path = os.path.join('/home/ellen/PIE-G/cfgs', 'config.cfg')
 	with open(path) as f:
 		data = json.load(f)
 	if key is not None:
@@ -225,3 +225,24 @@ def random_overlay(x, dataset='places365_standard'):
 		raise NotImplementedError(f'overlay has not been implemented for dataset "{dataset}"')
 
 	return ((1-alpha)*(x/255.) + (alpha)*imgs)*255.
+
+
+def random_conv(x):
+	"""Applies a random conv2d, deviates slightly from https://arxiv.org/abs/1910.05396"""
+	n, c, h, w = x.shape
+	for i in range(n):
+		weights = torch.randn(3, 3, 3, 3).to(x.device)
+		temp_x = x[i:i+1].reshape(-1, 3, h, w)/255.
+		temp_x = F.pad(temp_x, pad=[1]*4, mode='replicate')
+		out = torch.sigmoid(F.conv2d(temp_x, weights))*255.
+		total_out = out if i == 0 else torch.cat([total_out, out], axis=0)
+	return total_out.reshape(n, c, h, w)
+
+def log_model_info(model, verbose=False):
+    """Logs model info"""
+    model_total_params = sum(p.numel() for p in model.parameters())
+    model_grad_params = sum(
+        p.numel() for p in model.parameters() if p.requires_grad)
+    print("Total Parameters: {0}\t Gradient Parameters: {1}".format(
+        model_total_params, model_grad_params))
+    print("tuned percent:%.3f"%(model_grad_params * 100/model_total_params))

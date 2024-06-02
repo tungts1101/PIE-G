@@ -1,0 +1,8 @@
+checkpoints/
+dmcontrol-generalization-benchmark/
+cfgs/config.cfg
+exp_local/
+lib/
+test.py
+pieg_train.sh
+__pycache__

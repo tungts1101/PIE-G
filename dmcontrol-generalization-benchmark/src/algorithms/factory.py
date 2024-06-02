@@ -5,7 +5,7 @@ from algorithms.pad import PAD
 from algorithms.soda import SODA
 from algorithms.drq import DrQ
 from algorithms.svea import SVEA
-from algorithms.pieg import PIEG
+from algorithms.pieg import PIEGAgent
 
 algorithm = {
 	'sac': SAC,
@@ -15,7 +15,7 @@ algorithm = {
 	'soda': SODA,
 	'drq': DrQ,
 	'svea': SVEA,
-	'pieg': PIEG
+	'pieg': PIEGAgent
 }
 
 
