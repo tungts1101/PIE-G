@@ -612,6 +612,8 @@ class PromptAgent:
         self.stddev_clip = stddev_clip
         self.svea_alpha = svea_alpha
         self.svea_beta = svea_beta
+        
+        print(f'prompt cfg: {prompt}')
 
         # models
         self.encoder = ResNet(prompt, obs_shape).to(device)
