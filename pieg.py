@@ -314,7 +314,7 @@ class PIEGAgent:
         obs = self.encoder(obs)
 
         # strong augmentation
-        aug_obs = self.encoder(random_overlay(original_obs))
+        aug_obs = self.encoder(utils.random_conv(original_obs))
 
         with torch.no_grad():
             next_obs = self.encoder(next_obs)

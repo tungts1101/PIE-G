@@ -13,7 +13,7 @@ from torchvision import transforms, models
 import utils
 from utils import random_overlay
 from collections import OrderedDict
-
+import vision_transformer as vits
 
 
 class RandomShiftsAug(nn.Module):
@@ -49,22 +49,55 @@ class RandomShiftsAug(nn.Module):
                              padding_mode='zeros',
                              align_corners=False)
 
+class Segmentor(nn.Module):
+    def __init__(self):
+        super().__init__()
+        model = vits.__dict__['vit_small'](patch_size=8, num_classes=0)
+        for p in model.parameters():
+            p.requires_grad = False
+        url = "dino_deitsmall8_300ep_pretrain/dino_deitsmall8_300ep_pretrain.pth"
+        state_dict = torch.hub.load_state_dict_from_url(url="https://dl.fbaipublicfiles.com/dino/" + url)
+        model.load_state_dict(state_dict, strict=True)
+        
+        self.model = model
+        self.patch_size = 8
+    
+    @torch.no_grad()
+    def forward(self, x, head=2):
+        B, _, H, W = x.shape
+        w, h = W - W % self.patch_size, H - H % self.patch_size
+        x = x[:, :, :h, :w]
+
+        h_featmap = H // self.patch_size
+        w_featmap = W // self.patch_size
+        
+        attentions = self.model.get_last_selfattention(x)
+        # we keep only the [CLS] token
+        attentions = attentions[:, head, 0, 1:].reshape(B, 1, h_featmap, w_featmap)
+        attentions = nn.functional.interpolate(attentions, size=(H, W), mode="nearest")
+        return attentions
+        
 class ResNet(nn.Module):
     """ResNet model."""
 
-    def __init__(self, cfg, obs_shape):
+    def __init__(self, cfg, obs_shape, device):
         super(ResNet, self).__init__()
         self.cfg = cfg
         self.crop_size = obs_shape[-1]
         self.image_channel = 3
         self.repr_dim = 1024
 
+        self.segmentor = Segmentor()
+        self.segmentor.eval()
+        
         model_type = cfg.model_type
         model = self.get_pretrained_model(model_type)
 
         model = self.setup_prompt(model)
         self.setup_grad(model)
         self.setup_head(cfg)
+        
+        self.segmentor.to(device)
 
     def setup_grad(self, model):
         transfer_type = self.cfg.transfer_type
@@ -101,6 +134,18 @@ class ResNet(nn.Module):
                     ("maxpool", model.maxpool),
                     ("layer1", model.layer1),
                     ("layer2", model.layer2)
+                ]))
+                self.tuned_layers = nn.Identity()
+            elif self.cfg.location == "concat":
+                self.prompt_layers = nn.Sequential(OrderedDict([
+                    ("conv1", model.conv1),
+                    ("bn1", model.bn1),
+                    ("relu", model.relu),
+                    ("maxpool", model.maxpool),
+                ]))
+                self.frozen_layers = nn.Sequential(OrderedDict([
+                    ("layer1", model.layer1),
+                    ("layer2", model.layer2),
                 ]))
                 self.tuned_layers = nn.Identity()
         else:
@@ -214,11 +259,25 @@ class ResNet(nn.Module):
             return self._setup_prompt_below(model)
         elif self.prompt_location == "pad":
             return self._setup_prompt_pad(model)
+        elif self.prompt_location == "concat":
+            return self._setup_prompt_concat(model)
         else:
             raise ValueError(
                 "ResNet models cannot use prompt location {}".format(
                     self.prompt_location))
 
+    def _setup_prompt_concat(self, model):
+        # modify first conv layer
+        old_weight = model.conv1.weight  # [64, 3, 7, 7]
+        model.conv1 = nn.Conv2d(
+            4, 64, kernel_size=7,
+            stride=2, padding=3, bias=False
+        )
+        torch.nn.init.xavier_uniform(model.conv1.weight)
+
+        model.conv1.weight[:, :3, :, :].data.copy_(old_weight)
+        return model
+    
     def _setup_prompt_below(self, model):
         if self.cfg.initiation == "random":
             self.prompt_embeddings = nn.Parameter(torch.zeros(
@@ -302,7 +361,7 @@ class ResNet(nn.Module):
         elif model_type == "imagenet_sup_rn34":
             model = models.resnet34(pretrained=True)   # 512
         elif model_type == "imagenet_sup_rn18":
-            model = models.resnet18(pretrained=True)   # 512
+            model = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)   # 512
 
         elif model_type == "inat2021_sup_rn50":
             checkpoint = torch.load(
@@ -385,10 +444,14 @@ class ResNet(nn.Module):
         sample = torch.randn([1, 9, self.crop_size, self.crop_size])
         out_shape = self.forward_conv(sample).shape
         self.out_dim = out_shape[1]
-        self.head = nn.Sequential(
-            nn.Linear(self.out_dim, self.repr_dim),
-            nn.LayerNorm(self.repr_dim)
-        )
+        
+        # self.head = nn.Sequential(
+        #     nn.Linear(self.out_dim, self.repr_dim),
+        #     nn.LayerNorm(self.repr_dim)
+        # )
+        
+        self.repr_dim = self.out_dim
+        self.head = nn.LayerNorm(self.repr_dim)
 
     def incorporate_prompt(self, x):
         B = x.shape[0]
@@ -413,6 +476,8 @@ class ResNet(nn.Module):
                 x, prompt_emb_tb[:, :, self.num_tokens:, :]
             ), dim=-2)
             # (B, 3, crop_size + num_prompts, crop_size + num_prompts)
+        elif self.prompt_location == "concat":
+            x = torch.cat((x, self.segmentor(x)), dim=1)
         else:
             raise ValueError("not supported yet")
         x = self.prompt_layers(x)
@@ -585,7 +650,7 @@ class PromptAgent:
         print(f'prompt cfg: {prompt}')
 
         # models
-        self.encoder = ResNet(prompt, obs_shape).to(device)
+        self.encoder = ResNet(prompt, obs_shape, device).to(device)
         utils.log_model_info(self.encoder)
 
         self.actor = Actor(self.encoder.repr_dim, action_shape, feature_dim,
