@@ -1,5 +1,5 @@
 checkpoints/
-dmcontrol-generalization-benchmark/
+dmcontrol-generalization-benchmark/logs/
 cfgs/config.cfg
 exp_local/
 lib/

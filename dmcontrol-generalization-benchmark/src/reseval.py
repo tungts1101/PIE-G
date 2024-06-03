@@ -12,6 +12,7 @@ from algorithms.factory import make_agent
 from video import VideoRecorder
 import augmentations
 import matplotlib.pyplot as plt
+from logger import Logger
 
 def obs_to_input(obs):
 	if isinstance(obs, utils.LazyFrames):
@@ -23,7 +24,7 @@ def obs_to_input(obs):
 	return _obs
 
 
-def evaluate(env, agent, video, num_episodes, eval_mode, adapt=False, seed=0, domain_name='cartpole', task_name='swingup', algo='svea'):
+def evaluate(env, agent, video, num_episodes, eval_mode, L, adapt=False):
 	episode_rewards = []
 	for i in tqdm(range(num_episodes)):
 		if adapt:
@@ -48,8 +49,12 @@ def evaluate(env, agent, video, num_episodes, eval_mode, adapt=False, seed=0, do
 				ep_agent.update_inverse_dynamics(*augmentations.prepare_pad_batch(obs, next_obs, action))
 			obs = next_obs
 
+		if L is not None:
+			test_env = 'test_env'
+			video.save(f'{test_env}.mp4')
+			L.log(f'eval/episode_reward', episode_reward)
+  
 		episode_rewards.append(episode_reward)
-
 
 	return np.mean(episode_rewards)
 
@@ -60,6 +65,9 @@ def main(args):
 	print('args.seed:', args.seed)
 	args.image_size = 84
 	args.image_crop_size = 84
+	
+	print(f'args: {args}')
+ 
 	# Initialize environments
 	gym.logger.set_level(40)
 	env = make_env(
@@ -77,7 +85,6 @@ def main(args):
 	work_dir = os.path.join(args.log_dir, args.domain_name+'_'+args.task_name, args.algorithm, str(args.seed))
 	print('Working directory:', work_dir)
 	assert os.path.exists(work_dir), f'specified working directory {work_dir} does not exist'
-	model_dir = utils.make_dir(os.path.join(work_dir, 'model'))
 	video_dir = utils.make_dir(os.path.join(work_dir, 'video'))
 	video = VideoRecorder(video_dir if args.save_video else None, height=448, width=448)
 
@@ -94,27 +101,13 @@ def main(args):
 	print('Observations:', env.observation_space.shape)
 	print('Cropped observations:', cropped_obs_shape)
 
-	agent = torch.load('%s/snapshot.pt'%(work_dir), map_location='cuda:0')
-
-
-	print(f'\nEvaluating {work_dir} for {args.eval_episodes} episodes (mode: {args.eval_mode})')
-	reward = evaluate(env, agent, video, args.eval_episodes, args.eval_mode, seed=args.seed, domain_name=args.domain_name, task_name=args.task_name, algo=args.algorithm)
-	print('Reward:', int(reward))
-
-	adapt_reward = None
-	if args.algorithm == 'pad':
-		env = make_env(
-			domain_name=args.domain_name,
-			task_name=args.task_name,
-			seed=args.seed+42,
-			episode_length=args.episode_length,
-			action_repeat=args.action_repeat,
-			mode=args.eval_mode
-		)
-		adapt_reward = evaluate(env, agent, video, args.eval_episodes, args.eval_mode, adapt=True)
-		print('Adapt reward:', int(adapt_reward))
-
-
+	L = Logger(work_dir)
+ 
+	with torch.no_grad():
+		agent = torch.load('%s/snapshot.pt'%(work_dir), map_location='cuda:0')
+		print(f'\nEvaluating {work_dir} for {args.eval_episodes} episodes (mode: {args.eval_mode})')
+		reward = evaluate(env, agent, video, args.eval_episodes, args.eval_mode, L)
+		print('Reward:', int(reward))
 
 if __name__ == '__main__':
 	args = parse_args()
