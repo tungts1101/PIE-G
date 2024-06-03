@@ -395,7 +395,7 @@ class ResNet(nn.Module):
         return out_dim
 
     def setup_head(self, cfg):
-        sample = torch.randn([32] + [9, self.scrop_size, self.scrop_size])
+        sample = torch.randn([32] + [9, self.crop_size, self.crop_size])
         out_shape = self.forward_conv(sample).shape
         self.out_dim = out_shape[1]
         self.head = nn.Sequential(
