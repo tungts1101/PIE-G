@@ -661,7 +661,7 @@ class PromptAgent:
             target_Q = torch.cat((target_Q, target_Q), dim=0)
 
             Q1, Q2 = self.critic(obs, action)
-            critic_loss = (self.svea_alpha + self.svea_beta) * F.mse_loss(Q1, target_Q) + F.mse_loss(Q2, target_Q)
+            critic_loss = (self.svea_alpha + self.svea_beta) * (F.mse_loss(Q1, target_Q) + F.mse_loss(Q2, target_Q))
         else:
             Q1, Q2 = self.critic(obs, action)
             critic_loss = self.svea_alpha * (F.mse_loss(Q1, target_Q) + F.mse_loss(Q2, target_Q))
