@@ -395,9 +395,11 @@ class ResNet(nn.Module):
         return out_dim
 
     def setup_head(self, cfg):
-        out_dim = self.image_channel * self.get_outputdim()
+        sample = torch.randn([32] + [9, self.scrop_size, self.scrop_size])
+        out_shape = self.forward_conv(sample).shape
+        self.out_dim = out_shape[1]
         self.head = nn.Sequential(
-            nn.Linear(out_dim, self.repr_dim),
+            nn.Linear(self.out_dim, self.repr_dim),
             nn.LayerNorm(self.repr_dim)
         )
 
@@ -431,6 +433,28 @@ class ResNet(nn.Module):
         x = self.prompt_layers(x)
         return x
 
+    @torch.no_grad()
+    def forward_conv(self, obs, flatten=True):
+        # obs = obs / 255.0 - 0.5
+        time_step = obs.shape[1] // self.image_channel
+        obs = obs.view(obs.shape[0], time_step, self.image_channel, obs.shape[-2], obs.shape[-1])
+        obs = obs.view(obs.shape[0] * time_step, self.image_channel, obs.shape[-2], obs.shape[-1])
+
+        for name, module in self.frozen_layers:
+            obs = module(obs)
+            if name == 'layer2':
+                break
+
+        conv = obs.view(obs.size(0) // time_step, time_step, obs.size(1), obs.size(2), obs.size(3))
+        conv_current = conv[:, 1:, :, :, :]
+        conv_prev = conv_current - conv[:, :time_step - 1, :, :, :].detach()
+        conv = torch.cat([conv_current, conv_prev], axis=1)
+        conv = conv.view(conv.size(0), conv.size(1) * conv.size(2), conv.size(3), conv.size(4))
+        if flatten:
+            conv = conv.view(conv.size(0), -1)
+
+        return conv
+    
     def forward(self, x, return_feature=False):
         x = self.get_features(x)
 
@@ -444,20 +468,23 @@ class ResNet(nn.Module):
         if self.frozen_layers.training:
             self.frozen_layers.eval()
 
-        time_step = x.shape[1] // self.image_channel
-        x = x.view(x.shape[0], time_step, self.image_channel, x.shape[-2], x.shape[-1])
-        x = x.view(x.shape[0] * time_step, self.image_channel, x.shape[-2], x.shape[-1])
+        # time_step = x.shape[1] // self.image_channel
+        # x = x.view(x.shape[0], time_step, self.image_channel, x.shape[-2], x.shape[-1])
+        # x = x.view(x.shape[0] * time_step, self.image_channel, x.shape[-2], x.shape[-1])
 
+        # x = self.incorporate_prompt(x)
+        # x = self.frozen_layers(x)
+        # x = self.tuned_layers(x)
+
+        # x = x.view(x.size(0) // time_step, time_step, x.size(1), x.size(2), x.size(3))
+        # # x_current = x[:, 1:, :, :, :]
+        # # x_prev = x_current - x[:, :time_step - 1, :, :, :].detach()
+        # # x = torch.cat([x_current, x_prev], axis=1)
+        # x = x.view(x.size(0), x.size(1) * x.size(2), x.size(3), x.size(4))
+        # x = x.view(x.size(0), -1)
+        
         x = self.incorporate_prompt(x)
-        x = self.frozen_layers(x)
-        x = self.tuned_layers(x)
-
-        x = x.view(x.size(0) // time_step, time_step, x.size(1), x.size(2), x.size(3))
-        # x_current = x[:, 1:, :, :, :]
-        # x_prev = x_current - x[:, :time_step - 1, :, :, :].detach()
-        # x = torch.cat([x_current, x_prev], axis=1)
-        x = x.view(x.size(0), x.size(1) * x.size(2), x.size(3), x.size(4))
-        x = x.view(x.size(0), -1)
+        x = self.forward_conv(x)
 
         return x
 
@@ -517,8 +544,6 @@ class ResNet(nn.Module):
 #         out = self.ln(out)
 #         # obs = self.model(self.transform(obs.to(torch.float32)) / 255.0 - 0.5)
 #         return out
-
-
 
 
 class Actor(nn.Module):
