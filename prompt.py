@@ -190,16 +190,24 @@ class ResNet(nn.Module):
                 ]))
 
             elif transfer_type == "prompt" and self.cfg.location== "pad": # noqa
+                # self.frozen_layers = nn.Sequential(OrderedDict([
+                #     ("conv1", model.conv1),
+                #     ("bn1", model.bn1),
+                #     ("relu", model.relu),
+                #     ("maxpool", model.maxpool),
+                #     ("layer1", model.layer1),
+                #     ("layer2", model.layer2),
+                #     ("layer3", model.layer3),
+                #     ("layer4", model.layer4),
+                #     ("avgpool", model.avgpool),
+                # ]))
                 self.frozen_layers = nn.Sequential(OrderedDict([
                     ("conv1", model.conv1),
                     ("bn1", model.bn1),
                     ("relu", model.relu),
                     ("maxpool", model.maxpool),
                     ("layer1", model.layer1),
-                    ("layer2", model.layer2),
-                    ("layer3", model.layer3),
-                    ("layer4", model.layer4),
-                    ("avgpool", model.avgpool),
+                    ("layer2", model.layer2)
                 ]))
                 self.tuned_layers = nn.Identity()
 
@@ -395,7 +403,7 @@ class ResNet(nn.Module):
         return out_dim
 
     def setup_head(self, cfg):
-        sample = torch.randn([32] + [9, self.crop_size, self.crop_size])
+        sample = torch.randn([1, 9, self.crop_size, self.crop_size])
         out_shape = self.forward_conv(sample).shape
         self.out_dim = out_shape[1]
         self.head = nn.Sequential(
@@ -440,10 +448,8 @@ class ResNet(nn.Module):
         obs = obs.view(obs.shape[0], time_step, self.image_channel, obs.shape[-2], obs.shape[-1])
         obs = obs.view(obs.shape[0] * time_step, self.image_channel, obs.shape[-2], obs.shape[-1])
 
-        for name, module in self.frozen_layers:
-            obs = module(obs)
-            if name == 'layer2':
-                break
+        obs = self.incorporate_prompt(obs)
+        obs = self.frozen_layers(obs)
 
         conv = obs.view(obs.size(0) // time_step, time_step, obs.size(1), obs.size(2), obs.size(3))
         conv_current = conv[:, 1:, :, :, :]
@@ -483,7 +489,6 @@ class ResNet(nn.Module):
         # x = x.view(x.size(0), x.size(1) * x.size(2), x.size(3), x.size(4))
         # x = x.view(x.size(0), -1)
         
-        x = self.incorporate_prompt(x)
         x = self.forward_conv(x)
 
         return x
