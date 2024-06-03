@@ -90,23 +90,9 @@ class ResNet(nn.Module):
                 self.frozen_layers = nn.Sequential(OrderedDict([
                     ("layer1", model.layer1),
                     ("layer2", model.layer2),
-                    ("layer3", model.layer3),
-                    ("layer4", model.layer4),
-                    ("avgpool", model.avgpool),
                 ]))
                 self.tuned_layers = nn.Identity()
             elif self.cfg.location == "pad":
-                # self.frozen_layers = nn.Sequential(OrderedDict([
-                #     ("conv1", model.conv1),
-                #     ("bn1", model.bn1),
-                #     ("relu", model.relu),
-                #     ("maxpool", model.maxpool),
-                #     ("layer1", model.layer1),
-                #     ("layer2", model.layer2),
-                #     ("layer3", model.layer3),
-                #     ("layer4", model.layer4),
-                #     ("avgpool", model.avgpool),
-                # ]))
                 self.prompt_layers = nn.Identity()
                 self.frozen_layers = nn.Sequential(OrderedDict([
                     ("conv1", model.conv1),
@@ -118,7 +104,7 @@ class ResNet(nn.Module):
                 ]))
                 self.tuned_layers = nn.Identity()
         else:
-            # partial, linear, end2end, prompt-pad
+            # partial, linear, end2end
             self.prompt_layers = nn.Identity()
 
             if transfer_type == "partial-0":
