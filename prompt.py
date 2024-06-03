@@ -63,7 +63,6 @@ class ResNet(nn.Module):
         model = self.get_pretrained_model(model_type)
 
         model = self.setup_prompt(model)
-
         self.setup_grad(model)
         self.setup_head(cfg)
 
@@ -80,21 +79,44 @@ class ResNet(nn.Module):
         # prompt-below  conv1        all but conv1
         # prompt-pad   identity        all
 
-        if transfer_type == "prompt" and self.cfg.location == "below": # noqa
-            self.prompt_layers = nn.Sequential(OrderedDict([
-                ("conv1", model.conv1),
-                ("bn1", model.bn1),
-                ("relu", model.relu),
-                ("maxpool", model.maxpool),
-            ]))
-            self.frozen_layers = nn.Sequential(OrderedDict([
-                ("layer1", model.layer1),
-                ("layer2", model.layer2),
-                ("layer3", model.layer3),
-                ("layer4", model.layer4),
-                ("avgpool", model.avgpool),
-            ]))
-            self.tuned_layers = nn.Identity()
+        if transfer_type == "prompt":
+            if self.cfg.location == "below":
+                self.prompt_layers = nn.Sequential(OrderedDict([
+                    ("conv1", model.conv1),
+                    ("bn1", model.bn1),
+                    ("relu", model.relu),
+                    ("maxpool", model.maxpool),
+                ]))
+                self.frozen_layers = nn.Sequential(OrderedDict([
+                    ("layer1", model.layer1),
+                    ("layer2", model.layer2),
+                    ("layer3", model.layer3),
+                    ("layer4", model.layer4),
+                    ("avgpool", model.avgpool),
+                ]))
+                self.tuned_layers = nn.Identity()
+            elif self.cfg.location == "pad":
+                # self.frozen_layers = nn.Sequential(OrderedDict([
+                #     ("conv1", model.conv1),
+                #     ("bn1", model.bn1),
+                #     ("relu", model.relu),
+                #     ("maxpool", model.maxpool),
+                #     ("layer1", model.layer1),
+                #     ("layer2", model.layer2),
+                #     ("layer3", model.layer3),
+                #     ("layer4", model.layer4),
+                #     ("avgpool", model.avgpool),
+                # ]))
+                self.prompt_layers = nn.Identity()
+                self.frozen_layers = nn.Sequential(OrderedDict([
+                    ("conv1", model.conv1),
+                    ("bn1", model.bn1),
+                    ("relu", model.relu),
+                    ("maxpool", model.maxpool),
+                    ("layer1", model.layer1),
+                    ("layer2", model.layer2)
+                ]))
+                self.tuned_layers = nn.Identity()
         else:
             # partial, linear, end2end, prompt-pad
             self.prompt_layers = nn.Identity()
@@ -188,28 +210,6 @@ class ResNet(nn.Module):
                     ("layer4", model.layer4),
                     ("avgpool", model.avgpool),
                 ]))
-
-            elif transfer_type == "prompt" and self.cfg.location== "pad": # noqa
-                # self.frozen_layers = nn.Sequential(OrderedDict([
-                #     ("conv1", model.conv1),
-                #     ("bn1", model.bn1),
-                #     ("relu", model.relu),
-                #     ("maxpool", model.maxpool),
-                #     ("layer1", model.layer1),
-                #     ("layer2", model.layer2),
-                #     ("layer3", model.layer3),
-                #     ("layer4", model.layer4),
-                #     ("avgpool", model.avgpool),
-                # ]))
-                self.frozen_layers = nn.Sequential(OrderedDict([
-                    ("conv1", model.conv1),
-                    ("bn1", model.bn1),
-                    ("relu", model.relu),
-                    ("maxpool", model.maxpool),
-                    ("layer1", model.layer1),
-                    ("layer2", model.layer2)
-                ]))
-                self.tuned_layers = nn.Identity()
 
         if transfer_type == "tinytl-bias":
             for k, p in self.frozen_layers.named_parameters():
@@ -395,13 +395,6 @@ class ResNet(nn.Module):
         model.fc = nn.Identity()
         return model
 
-    def get_outputdim(self):
-        if self.cfg.model_type == "imagenet_sup_rn34" or self.cfg.model_type == "imagenet_sup_rn18":
-            out_dim = 512
-        else:
-            out_dim = 2048
-        return out_dim
-
     def setup_head(self, cfg):
         sample = torch.randn([1, 9, self.crop_size, self.crop_size])
         out_shape = self.forward_conv(sample).shape
@@ -452,9 +445,9 @@ class ResNet(nn.Module):
         obs = self.frozen_layers(obs)
 
         conv = obs.view(obs.size(0) // time_step, time_step, obs.size(1), obs.size(2), obs.size(3))
-        conv_current = conv[:, 1:, :, :, :]
-        conv_prev = conv_current - conv[:, :time_step - 1, :, :, :].detach()
-        conv = torch.cat([conv_current, conv_prev], axis=1)
+        # conv_current = conv[:, 1:, :, :, :]
+        # conv_prev = conv_current - conv[:, :time_step - 1, :, :, :].detach()
+        # conv = torch.cat([conv_current, conv_prev], axis=1)
         conv = conv.view(conv.size(0), conv.size(1) * conv.size(2), conv.size(3), conv.size(4))
         if flatten:
             conv = conv.view(conv.size(0), -1)
@@ -744,7 +737,7 @@ class PromptAgent:
         obs = self.encoder(obs)
 
         # strong augmentation
-        aug_obs = self.encoder(utils.random_conv(original_obs))
+        aug_obs = self.encoder(random_overlay(original_obs))
 
         with torch.no_grad():
             next_obs = self.encoder(next_obs)

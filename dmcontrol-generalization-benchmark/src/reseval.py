@@ -1,5 +1,4 @@
 import torch
-import torchvision
 import os
 import numpy as np
 import gym
@@ -8,10 +7,8 @@ from copy import deepcopy
 from tqdm import tqdm
 from arguments import parse_args
 from env.wrappers import make_env
-from algorithms.factory import make_agent
 from video import VideoRecorder
 import augmentations
-import matplotlib.pyplot as plt
 from logger import Logger
 
 def obs_to_input(obs):
