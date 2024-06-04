@@ -42,7 +42,6 @@ class ResNet(nn.Module):
             p.requires_grad = False
 
     def setup_prompt(self, model):
-        self.prompt_location = self.cfg.location        
         self.num_tokens = self.cfg.num_tokens
 
         if self.cfg.initiation == "random":
@@ -110,10 +109,7 @@ class ResNet(nn.Module):
 
     @torch.no_grad()
     def forward_conv(self, obs, flatten=True):
-        if self.image_channel == 4:
-            obs = torch.cat((obs[:, :3, :, :] / 255.0, obs[:, 3:, :, :]), dim=1)
-        else:
-            obs = obs / 255.0
+        obs = obs / 255.0
         time_step = obs.shape[1] // self.image_channel
         obs = obs.view(obs.shape[0], time_step, self.image_channel, obs.shape[-2], obs.shape[-1])
         obs = obs.view(obs.shape[0] * time_step, self.image_channel, obs.shape[-2], obs.shape[-1])
@@ -286,7 +282,7 @@ class PromptAgent:
         obs = self.aug(obs.float())
         original_obs = obs.clone()
         next_obs = self.aug(next_obs.float())
-        aug_obs = utils.random_conv(original_obs)
+        aug_obs = utils.random_overlay(original_obs)
 
         obs = self.encoder(obs)
         aug_obs = self.encoder(aug_obs)
