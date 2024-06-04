@@ -39,9 +39,9 @@ def evaluate(env, agent, video, num_episodes, eval_mode, L):
 			obs = next_obs
 
 		if L is not None:
-			test_env = 'test_env'
-			video.save(f'{test_env}.mp4')
-			L.log(f'eval/episode_reward', episode_reward)
+			L.log(f'eval/episode_reward', episode_reward, i)
+			L.dump(i)
+		video.save(f'eval_{eval_mode}_{i}.mp4')
   
 		episode_rewards.append(episode_reward)
 
@@ -76,7 +76,7 @@ def main(args):
 	assert os.path.exists(work_dir), f'specified working directory {work_dir} does not exist'
 	video_dir = utils.make_dir(os.path.join(work_dir, 'video'))
 	video = VideoRecorder(video_dir if args.save_video else None, height=448, width=448)
-
+ 
 	# Check if evaluation has already been run
 	if args.eval_mode == 'distracting_cs':
 		results_fp = os.path.join(work_dir, args.eval_mode+'_'+str(args.distracting_cs_intensity).replace('.', '_')+'.pt')
@@ -84,25 +84,20 @@ def main(args):
 		results_fp = os.path.join(work_dir, args.eval_mode+'.pt')
 	assert not os.path.exists(results_fp), f'{args.eval_mode} results already exist for {work_dir}'
 
-	# Prepare agent
 	assert torch.cuda.is_available(), 'must have cuda enabled'
-	cropped_obs_shape = (3*args.frame_stack, args.image_crop_size, args.image_crop_size)
-	print('Observations:', env.observation_space.shape)
-	print('Cropped observations:', cropped_obs_shape)
 
 	L = Logger(work_dir)
  
 	with torch.no_grad():
 		snapshot = torch.load(f'{work_dir}/snapshot.pt')
-		agent = hydra.utils.instantiate(snapshot['cfg'])
-		agent.load(snapshot['state_dict']).to('cuda:0').eval()
+		agent = hydra.utils.instantiate(snapshot['cfg'])['agent']
+		agent.load(snapshot['state_dict']).train(False)
 
 		print(f'\nEvaluating {work_dir} for {args.eval_episodes} episodes (mode: {args.eval_mode})')
 		reward = evaluate(env, agent, video, args.eval_episodes, args.eval_mode, L)
 		print('Reward:', int(reward))
-
-def make_agent(cfg):
-    return hydra.utils.instantiate(cfg)
+		L.log(f'eval/reward', reward)
+		L.dump(args.eval_episodes)
 
 if __name__ == '__main__':
 	args = parse_args()

@@ -423,6 +423,7 @@ class PromptAgent:
         self.actor.load_state_dict(state_dict_map['actor'])
         self.critic.load_state_dict(state_dict_map['critic'])
         self.critic_target.load_state_dict(state_dict_map['critic_target'])
+        return self
 
     def train(self, training=True):
         self.training = training

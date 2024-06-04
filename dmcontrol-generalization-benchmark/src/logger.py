@@ -96,7 +96,7 @@ class Logger(object):
             formating=FORMAT_CONFIG[config]['eval']
         )
 
-    def log(self, key, value, step, n=1):
+    def log(self, key, value, step=0, n=1):
         assert key.startswith('train') or key.startswith('eval')
         if type(value) == torch.Tensor:
             value = value.item()
