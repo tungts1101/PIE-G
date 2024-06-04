@@ -28,8 +28,6 @@ use_tb: true
 use_wandb: true
 # experiment
 experiment: exp
-svea_alpha: 0.5 
-svea_beta: 0.5
 # agent
 lr: 1e-4
 feature_dim: 256
@@ -51,12 +49,8 @@ agent:
   stddev_clip: 0.3
   prompt:
     model_root: ./checkpoints
-    model_type: imagenet_sup_rn18
-    location: below
     num_tokens: 20
     initiation: random
-  svea_alpha: ${svea_alpha}
-  svea_beta: ${svea_beta}
 
 hydra:
   run:

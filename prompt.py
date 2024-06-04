@@ -8,9 +8,7 @@ import torch.nn.functional as F
 from torchvision import transforms, models
 import utils
 from collections import OrderedDict
-from modules import Actor, Critic, Segmentor, RandomShiftsAug
-import matplotlib.pyplot as plt
-import os
+from modules import Actor, Critic, RandomShiftsAug
 
         
 class ResNet(nn.Module):
@@ -18,40 +16,27 @@ class ResNet(nn.Module):
         super(ResNet, self).__init__()
         self.cfg = cfg
         self.crop_size = obs_shape[-1]
-        self.image_channel = 4 if self.cfg.location == 'concat' else 3
+        self.image_channel = 3
         self.repr_dim = 1024
         
-        model_type = cfg.model_type
-        model = self.get_pretrained_model(model_type)
+        model = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
+        model.fc = nn.Identity()
 
         model = self.setup_prompt(model)
         self.setup_grad(model)
         self.setup_head(cfg)
         
     def setup_grad(self, model):
-        if self.cfg.location == "pad":
-            self.prompt_layers = nn.Identity()
-            self.frozen_layers = nn.Sequential(OrderedDict([
-                ("conv1", model.conv1),
-                ("bn1", model.bn1),
-                ("relu", model.relu),
-                ("maxpool", model.maxpool),
-                ("layer1", model.layer1),
-                ("layer2", model.layer2)
-            ]))
-            self.tuned_layers = nn.Identity()
-        elif self.cfg.location == "concat":
-            self.prompt_layers = nn.Sequential(OrderedDict([
-                ("conv1", model.conv1),
-                ("bn1", model.bn1),
-                ("relu", model.relu),
-                ("maxpool", model.maxpool),
-            ]))
-            self.frozen_layers = nn.Sequential(OrderedDict([
-                ("layer1", model.layer1),
-                ("layer2", model.layer2),
-            ]))
-            self.tuned_layers = nn.Identity()
+        self.prompt_layers = nn.Identity()
+        self.frozen_layers = nn.Sequential(OrderedDict([
+            ("conv1", model.conv1),
+            ("bn1", model.bn1),
+            ("relu", model.relu),
+            ("maxpool", model.maxpool),
+            ("layer1", model.layer1),
+            ("layer2", model.layer2)
+        ]))
+        self.tuned_layers = nn.Identity()
         
         for k, p in self.frozen_layers.named_parameters():
             p.requires_grad = False
@@ -59,24 +44,7 @@ class ResNet(nn.Module):
     def setup_prompt(self, model):
         self.prompt_location = self.cfg.location        
         self.num_tokens = self.cfg.num_tokens
-        if self.prompt_location == "pad":
-            return self._setup_prompt_pad(model)
-        elif self.prompt_location == "concat":
-            return self._setup_prompt_concat(model)
 
-    def _setup_prompt_concat(self, model):
-        # modify first conv layer
-        old_weight = model.conv1.weight  # [64, 3, 7, 7]
-        model.conv1 = nn.Conv2d(
-            4, 64, kernel_size=7,
-            stride=2, padding=3, bias=False
-        )
-        torch.nn.init.xavier_uniform_(model.conv1.weight)
-
-        model.conv1.weight[:, :3, :, :].data.copy_(old_weight)
-        return model
-
-    def _setup_prompt_pad(self, model):
         if self.cfg.initiation == "random":
             self.prompt_embeddings_tb = nn.Parameter(torch.zeros(
                     1, 3, 2 * self.num_tokens,
@@ -107,48 +75,36 @@ class ResNet(nn.Module):
             nn.init.normal_(self.prompt_embeddings_lr.data)
 
             self.prompt_norm = nn.Identity()
-        else:
-            raise ValueError("Other initiation scheme is not supported")
-        return model
-
-    def get_pretrained_model(self, model_type):
-        model = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)   # 512
-        model.fc = nn.Identity()
+        
         return model
 
     def setup_head(self, cfg):
-        if self.cfg.location == "concat":
-            sample = torch.randn([1, 12, self.crop_size, self.crop_size])
-        else:
-            sample = torch.randn([1, 9, self.crop_size, self.crop_size])
-
+        sample = torch.randn([1, 9, self.crop_size, self.crop_size])
         out_shape = self.forward_conv(sample).shape
         self.out_dim = out_shape[1]
-        
-        self.repr_dim = self.out_dim
-        self.head = nn.LayerNorm(self.repr_dim)
+
+        self.head = nn.Sequential(
+            nn.Linear(self.out_dim, self.repr_dim),
+            nn.LayerNorm(self.repr_dim),
+            nn.ReLU(inplace=True)
+        )
 
     def incorporate_prompt(self, x):
         B = x.shape[0]
-        if self.prompt_location == "pad":
-            prompt_emb_lr = self.prompt_norm(
-                self.prompt_embeddings_lr).expand(B, -1, -1, -1)
-            prompt_emb_tb = self.prompt_norm(
-                self.prompt_embeddings_tb).expand(B, -1, -1, -1)
+        prompt_emb_lr = self.prompt_norm(
+            self.prompt_embeddings_lr).expand(B, -1, -1, -1)
+        prompt_emb_tb = self.prompt_norm(
+            self.prompt_embeddings_tb).expand(B, -1, -1, -1)
 
-            x = torch.cat((
-                prompt_emb_lr[:, :, :, :self.num_tokens],
-                x, prompt_emb_lr[:, :, :, self.num_tokens:]
-                ), dim=-1)
-            x = torch.cat((
-                prompt_emb_tb[:, :, :self.num_tokens, :],
-                x, prompt_emb_tb[:, :, self.num_tokens:, :]
-            ), dim=-2)
-            # (B, 3, crop_size + num_prompts, crop_size + num_prompts)
-        elif self.prompt_location == "concat":
-            x = x
-        else:
-            raise ValueError("not supported yet")
+        x = torch.cat((
+            prompt_emb_lr[:, :, :, :self.num_tokens],
+            x, prompt_emb_lr[:, :, :, self.num_tokens:]
+            ), dim=-1)
+        x = torch.cat((
+            prompt_emb_tb[:, :, :self.num_tokens, :],
+            x, prompt_emb_tb[:, :, self.num_tokens:, :]
+        ), dim=-2)
+        # (B, 3, crop_size + num_prompts, crop_size + num_prompts)
         x = self.prompt_layers(x)
         return x
 
@@ -166,9 +122,9 @@ class ResNet(nn.Module):
         obs = self.frozen_layers(obs)
 
         conv = obs.view(obs.size(0) // time_step, time_step, obs.size(1), obs.size(2), obs.size(3))
-        # conv_current = conv[:, 1:, :, :, :]
-        # conv_prev = conv_current - conv[:, :time_step - 1, :, :, :].detach()
-        # conv = torch.cat([conv_current, conv_prev], axis=1)
+        conv_current = conv[:, 1:, :, :, :]
+        conv_prev = conv_current - conv[:, :time_step - 1, :, :, :].detach()
+        conv = torch.cat([conv_current, conv_prev], axis=1)
         conv = conv.view(conv.size(0), conv.size(1) * conv.size(2), conv.size(3), conv.size(4))
         if flatten:
             conv = conv.view(conv.size(0), -1)
@@ -222,7 +178,6 @@ class PromptAgent:
 
         # data augmentation
         self.aug = RandomShiftsAug(pad=4)
-        self.segmentor = Segmentor().to(device)
 
         self.train()
         self.critic_target.train()
@@ -247,25 +202,9 @@ class PromptAgent:
         self.actor.train(training)
         self.critic.train(training)
 
-    def concat(self, obs, mask):
-        BS, FS, H, W = obs.shape
-        obs = obs.view(BS * (FS // 3), 3, H, W)
-        obs = torch.cat((obs, mask), dim=1)
-        obs = obs.view(BS, 12, H, W)
-        return obs
-
-    @torch.no_grad
-    def get_mask(self, obs):
-        BS, FS, H, W = obs.shape
-        _obs = obs.view(BS * (FS // 3), 3, H, W)
-        return self.segmentor(_obs)
-
     def act(self, obs, step, eval_mode):
         obs = torch.as_tensor(obs, device=self.device)
         obs = obs.unsqueeze(0)
-
-        if self.prompt_cfg.location == 'concat':
-            obs = self.concat(obs.float(), self.get_mask(obs.float()))
 
         obs = self.encoder(obs)
         stddev = utils.schedule(self.stddev_schedule, step)
@@ -344,38 +283,15 @@ class PromptAgent:
         batch = next(replay_iter)
         obs, action, reward, discount, next_obs = utils.to_torch(batch, self.device)
 
-        if self.prompt_cfg.location == 'concat':
-            BS, FS, _, _ = obs.shape
-            _obs = torch.cat((obs, next_obs), dim=0)
-            _mask = self.get_mask(_obs.float())
-            mask = _mask[:BS*3, :, :, :]
-            next_mask = _mask[BS*3:, :, :, :]
-            # print(torch.max(mask), torch.min(mask))
-            # print(torch.max(next_mask), torch.min(next_mask))
-            # _obs = _obs.view(_obs.shape[0] * 3, 3, _obs.shape[-2], _obs.shape[-1])
-            # for i in range(10):
-            #     os.makedirs('out', exist_ok=True)
-            #     fname = os.path.join('out', f'mask_{i}.png')
-            #     pic = os.path.join('out', f'pic_{i}.png')
-            #     if not os.path.exists(fname):
-            #         plt.imsave(fname=pic, arr=_obs[i, :, :, :][0].cpu().numpy(), format='png')
-            #         plt.imsave(fname=fname, arr=mask[i, :, :, :][0].cpu().numpy(), format='png')
-
         obs = self.aug(obs.float())
         original_obs = obs.clone()
         next_obs = self.aug(next_obs.float())
         aug_obs = utils.random_conv(original_obs)
-        
-        if self.prompt_cfg.location == 'concat':
-            obs = self.concat(obs, mask)
-            aug_obs = self.concat(aug_obs, mask)
 
         obs = self.encoder(obs)
         aug_obs = self.encoder(aug_obs)
 
         with torch.no_grad():
-            if self.prompt_cfg.location == 'concat':
-                next_obs = self.concat(next_obs, next_mask)
             next_obs = self.encoder(next_obs)
 
         if self.use_tb:
