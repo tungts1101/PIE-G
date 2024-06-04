@@ -79,15 +79,12 @@ class Segmentor(nn.Module):
 class ResNet(nn.Module):
     """ResNet model."""
 
-    def __init__(self, cfg, obs_shape, device):
+    def __init__(self, cfg, obs_shape):
         super(ResNet, self).__init__()
         self.cfg = cfg
         self.crop_size = obs_shape[-1]
         self.image_channel = 3
         self.repr_dim = 1024
-
-        self.segmentor = Segmentor()
-        self.segmentor.eval()
         
         model_type = cfg.model_type
         model = self.get_pretrained_model(model_type)
@@ -96,8 +93,6 @@ class ResNet(nn.Module):
         self.setup_grad(model)
         self.setup_head(cfg)
         
-        self.segmentor.to(device)
-
     def setup_grad(self, model):
         if self.cfg.location == "below":
             self.prompt_layers = nn.Sequential(OrderedDict([
@@ -274,7 +269,7 @@ class ResNet(nn.Module):
             ), dim=-2)
             # (B, 3, crop_size + num_prompts, crop_size + num_prompts)
         elif self.prompt_location == "concat":
-            x = torch.cat((x, self.segmentor(x)), dim=1)
+            x = x
         else:
             raise ValueError("not supported yet")
         x = self.prompt_layers(x)
@@ -334,9 +329,10 @@ class PromptAgent:
         self.svea_beta = svea_beta
         
         print(f'prompt cfg: {prompt}')
+        self.prompt_cfg = prompt
 
         # models
-        self.encoder = ResNet(prompt, obs_shape, device).to(device)
+        self.encoder = ResNet(prompt, obs_shape).to(device)
         utils.log_model_info(self.encoder)
 
         self.actor = Actor(self.encoder.repr_dim, action_shape, feature_dim,
@@ -355,6 +351,8 @@ class PromptAgent:
 
         # data augmentation
         self.aug = RandomShiftsAug(pad=4)
+
+        self.segmentor = Segmentor().to(device).eval()
 
         self.train()
         self.critic_target.train()
@@ -381,6 +379,10 @@ class PromptAgent:
 
     def act(self, obs, step, eval_mode):
         obs = torch.as_tensor(obs, device=self.device)
+
+        if self.prompt_cfg.location == 'concat':
+            obs = torch.cat((obs, self.segmentor(obs)), dim=1)
+
         obs = self.encoder(obs.unsqueeze(0))
         stddev = utils.schedule(self.stddev_schedule, step)
         dist = self.actor(obs, stddev)
@@ -465,17 +467,25 @@ class PromptAgent:
         obs, action, reward, discount, next_obs = utils.to_torch(
             batch, self.device)
 
-        # augment
+        if self.prompt_cfg.location == 'concat':
+            mask = self.segmentor(obs)
+            next_mask = self.segmentor(next_obs)
+
         obs = self.aug(obs.float())
         original_obs = obs.clone()
         next_obs = self.aug(next_obs.float())
-        # encode
-        obs = self.encoder(obs)
+        aug_obs = utils.random_overlay(original_obs)
+        
+        if self.prompt_cfg.location == 'concat':
+            obs = torch.cat((obs, mask), dim=1)
+            aug_obs = torch.cat((aug_obs, mask), dim=1)
 
-        # strong augmentation
-        aug_obs = self.encoder(utils.random_overlay(original_obs))
+        obs = self.encoder(obs)
+        aug_obs = self.encoder(aug_obs)
 
         with torch.no_grad():
+            if self.prompt_cfg.location == 'concat':
+                next_obs = torch.cat((next_obs, next_mask), dim=1)
             next_obs = self.encoder(next_obs)
 
         if self.use_tb:
