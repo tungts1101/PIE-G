@@ -52,8 +52,7 @@ agent:
   prompt:
     model_root: ./checkpoints
     model_type: imagenet_sup_rn18
-    transfer_type: prompt
-    location: pad
+    location: concat
     num_tokens: 20
     initiation: random
   svea_alpha: ${svea_alpha}

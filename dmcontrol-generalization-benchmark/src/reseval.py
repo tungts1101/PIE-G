@@ -10,6 +10,7 @@ from env.wrappers import make_env
 from video import VideoRecorder
 import augmentations
 from logger import Logger
+import hydra
 
 def obs_to_input(obs):
 	if isinstance(obs, utils.LazyFrames):
@@ -21,29 +22,20 @@ def obs_to_input(obs):
 	return _obs
 
 
-def evaluate(env, agent, video, num_episodes, eval_mode, L, adapt=False):
+def evaluate(env, agent, video, num_episodes, eval_mode, L):
 	episode_rewards = []
 	for i in tqdm(range(num_episodes)):
-		if adapt:
-			ep_agent = deepcopy(agent)
-			ep_agent.init_pad_optimizer()
-		else:
-			ep_agent = agent
 		obs = env.reset()
 		video.init(enabled=True)
 		done = False
 		episode_reward = 0
 		while not done:
 			with torch.no_grad():
-				action = ep_agent['agent'].act(np.array(obs),
-											int(1e6),
-											eval_mode=True)
+				action = agent.act(np.array(obs), int(1e6), eval_mode=True)
 
 			next_obs, reward, done, _ = env.step(action)
 			video.record(env, eval_mode)
 			episode_reward += reward
-			if adapt:
-				ep_agent.update_inverse_dynamics(*augmentations.prepare_pad_batch(obs, next_obs, action))
 			obs = next_obs
 
 		if L is not None:
@@ -79,7 +71,7 @@ def main(args):
 	)
 
 	# Set working directory
-	work_dir = os.path.join(args.log_dir, args.domain_name+'_'+args.task_name, args.algorithm, str(args.seed))
+	work_dir = os.path.join(args.log_dir, args.domain_name+'_'+args.task_name, args.algorithm, args.prompt, str(args.seed))
 	print('Working directory:', work_dir)
 	assert os.path.exists(work_dir), f'specified working directory {work_dir} does not exist'
 	video_dir = utils.make_dir(os.path.join(work_dir, 'video'))
@@ -101,10 +93,16 @@ def main(args):
 	L = Logger(work_dir)
  
 	with torch.no_grad():
-		agent = torch.load('%s/snapshot.pt'%(work_dir), map_location='cuda:0')
+		snapshot = torch.load(f'{work_dir}/snapshot.pt')
+		agent = hydra.utils.instantiate(snapshot['cfg'])
+		agent.load(snapshot['state_dict']).to('cuda:0').eval()
+
 		print(f'\nEvaluating {work_dir} for {args.eval_episodes} episodes (mode: {args.eval_mode})')
 		reward = evaluate(env, agent, video, args.eval_episodes, args.eval_mode, L)
 		print('Reward:', int(reward))
+
+def make_agent(cfg):
+    return hydra.utils.instantiate(cfg)
 
 if __name__ == '__main__':
 	args = parse_args()

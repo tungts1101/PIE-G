@@ -15,6 +15,7 @@ def parse_args():
 	
 	# agent
 	parser.add_argument('--algorithm', default='sac', type=str)
+	parser.add_argument('--prompt', default='pad', type=str)
 	parser.add_argument('--train_steps', default='500k', type=str)
 	parser.add_argument('--discount', default=0.99, type=float)
 	parser.add_argument('--init_steps', default=1000, type=int)
@@ -71,8 +72,6 @@ def parse_args():
 	parser.add_argument('--save_video', default=False, action='store_true')
 
 	args = parser.parse_args()
-
-	assert args.algorithm in {'sac', 'rad', 'curl', 'pad', 'soda', 'drq', 'svea', 'svea_res', 'pieg'}, f'specified algorithm "{args.algorithm}" is not supported'
 
 	assert args.eval_mode in {'train', 'color_easy', 'color_hard', 'video_easy', 'video_hard', 'distracting_cs', 'none'}, f'specified mode "{args.eval_mode}" is not supported'
 	assert args.seed is not None, 'must provide seed for experiment'

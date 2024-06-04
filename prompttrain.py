@@ -200,8 +200,9 @@ class Workspace:
 
     def save_snapshot(self):
         snapshot = self.work_dir / 'snapshot.pt'
-        keys_to_save = ['agent', 'timer', '_global_step', '_global_episode']
+        keys_to_save = ['timer', '_global_step', '_global_episode', 'cfg']
         payload = {k: self.__dict__[k] for k in keys_to_save}
+        payload.update({'state_dict': self.agent.save()})
         with snapshot.open('wb') as f:
             torch.save(payload, f)
 
@@ -211,6 +212,8 @@ class Workspace:
             payload = torch.load(f)
         for k, v in payload.items():
             self.__dict__[k] = v
+        self.agent = hydra.utils.instantiate(self.cfg)
+        self.agent.load(payload['state_dict'])
 
 
 @hydra.main(config_path='cfgs', config_name='promptconfig')
