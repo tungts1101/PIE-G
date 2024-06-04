@@ -2,88 +2,21 @@
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
-import hydra
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchvision.models import resnet18, resnet34, resnet50
 from torchvision import transforms, models
 import utils
 from collections import OrderedDict
-import vision_transformer as vits
-from modules import Actor, Critic
+from modules import Actor, Critic, Segmentor, RandomShiftsAug
 
-
-class RandomShiftsAug(nn.Module):
-    def __init__(self, pad):
-        super().__init__()
-        self.pad = pad
-
-    def forward(self, x):
-        n, c, h, w = x.size()
-        assert h == w
-        padding = tuple([self.pad] * 4)
-        x = F.pad(x, padding, 'replicate')
-        eps = 1.0 / (h + 2 * self.pad)
-        arange = torch.linspace(-1.0 + eps,
-                                1.0 - eps,
-                                h + 2 * self.pad,
-                                device=x.device,
-                                dtype=x.dtype)[:h]
-        arange = arange.unsqueeze(0).repeat(h, 1).unsqueeze(2)
-        base_grid = torch.cat([arange, arange.transpose(1, 0)], dim=2)
-        base_grid = base_grid.unsqueeze(0).repeat(n, 1, 1, 1)
-
-        shift = torch.randint(0,
-                              2 * self.pad + 1,
-                              size=(n, 1, 1, 2),
-                              device=x.device,
-                              dtype=x.dtype)
-        shift *= 2.0 / (h + 2 * self.pad)
-
-        grid = base_grid + shift
-        return F.grid_sample(x,
-                             grid,
-                             padding_mode='zeros',
-                             align_corners=False)
-
-class Segmentor(nn.Module):
-    def __init__(self):
-        super().__init__()
-        model = vits.__dict__['vit_small'](patch_size=8, num_classes=0)
-        for p in model.parameters():
-            p.requires_grad = False
-        url = "dino_deitsmall8_300ep_pretrain/dino_deitsmall8_300ep_pretrain.pth"
-        state_dict = torch.hub.load_state_dict_from_url(url="https://dl.fbaipublicfiles.com/dino/" + url)
-        model.load_state_dict(state_dict, strict=True)
-        
-        self.model = model
-        self.patch_size = 8
-    
-    @torch.no_grad()
-    def forward(self, x, head=2):
-        B, _, H, W = x.shape
-        w, h = W - W % self.patch_size, H - H % self.patch_size
-        x = x[:, :, :h, :w]
-
-        h_featmap = H // self.patch_size
-        w_featmap = W // self.patch_size
-        
-        attentions = self.model.get_last_selfattention(x)
-        # we keep only the [CLS] token
-        attentions = attentions[:, head, 0, 1:].reshape(B, 1, h_featmap, w_featmap)
-        attentions = nn.functional.interpolate(attentions, size=(H, W), mode="nearest")
-        return attentions
         
 class ResNet(nn.Module):
-    """ResNet model."""
-
     def __init__(self, cfg, obs_shape):
         super(ResNet, self).__init__()
         self.cfg = cfg
         self.crop_size = obs_shape[-1]
-        self.image_channel = 3
+        self.image_channel = 4 if self.cfg.location == 'concat' else 3
         self.repr_dim = 1024
         
         model_type = cfg.model_type
@@ -94,19 +27,7 @@ class ResNet(nn.Module):
         self.setup_head(cfg)
         
     def setup_grad(self, model):
-        if self.cfg.location == "below":
-            self.prompt_layers = nn.Sequential(OrderedDict([
-                ("conv1", model.conv1),
-                ("bn1", model.bn1),
-                ("relu", model.relu),
-                ("maxpool", model.maxpool),
-            ]))
-            self.frozen_layers = nn.Sequential(OrderedDict([
-                ("layer1", model.layer1),
-                ("layer2", model.layer2),
-            ]))
-            self.tuned_layers = nn.Identity()
-        elif self.cfg.location == "pad":
+        if self.cfg.location == "pad":
             self.prompt_layers = nn.Identity()
             self.frozen_layers = nn.Sequential(OrderedDict([
                 ("conv1", model.conv1),
@@ -134,19 +55,12 @@ class ResNet(nn.Module):
             p.requires_grad = False
 
     def setup_prompt(self, model):
-        # ONLY support below and pad
         self.prompt_location = self.cfg.location        
         self.num_tokens = self.cfg.num_tokens
-        if self.prompt_location == "below":
-            return self._setup_prompt_below(model)
-        elif self.prompt_location == "pad":
+        if self.prompt_location == "pad":
             return self._setup_prompt_pad(model)
         elif self.prompt_location == "concat":
             return self._setup_prompt_concat(model)
-        else:
-            raise ValueError(
-                "ResNet models cannot use prompt location {}".format(
-                    self.prompt_location))
 
     def _setup_prompt_concat(self, model):
         # modify first conv layer
@@ -155,43 +69,7 @@ class ResNet(nn.Module):
             4, 64, kernel_size=7,
             stride=2, padding=3, bias=False
         )
-        torch.nn.init.xavier_uniform(model.conv1.weight)
-
-        model.conv1.weight[:, :3, :, :].data.copy_(old_weight)
-        return model
-    
-    def _setup_prompt_below(self, model):
-        if self.cfg.initiation == "random":
-            self.prompt_embeddings = nn.Parameter(torch.zeros(
-                    1, self.num_tokens,
-                    self.crop_size, self.crop_size
-            ))
-            nn.init.uniform_(self.prompt_embeddings.data, 0.0, 1.0)
-            self.prompt_norm = transforms.Normalize(
-                mean=[sum([0.485, 0.456, 0.406])/3] * self.num_tokens,
-                std=[sum([0.229, 0.224, 0.225])/3] * self.num_tokens,
-            )
-
-        elif self.cfg.initiation == "gaussian":
-            self.prompt_embeddings = nn.Parameter(torch.zeros(
-                    1, self.num_tokens,
-                    self.crop_size, self.crop_size
-            ))
-
-            nn.init.normal_(self.prompt_embeddings.data)
-
-            self.prompt_norm = nn.Identity()
-
-        else:
-            raise ValueError("Other initiation scheme is not supported")
-
-        # modify first conv layer
-        old_weight = model.conv1.weight  # [64, 3, 7, 7]
-        model.conv1 = nn.Conv2d(
-            self.num_tokens+3, 64, kernel_size=7,
-            stride=2, padding=3, bias=False
-        )
-        torch.nn.init.xavier_uniform(model.conv1.weight)
+        torch.nn.init.xavier_uniform_(model.conv1.weight)
 
         model.conv1.weight[:, :3, :, :].data.copy_(old_weight)
         return model
@@ -238,7 +116,11 @@ class ResNet(nn.Module):
         return model
 
     def setup_head(self, cfg):
-        sample = torch.randn([1, 9, self.crop_size, self.crop_size])
+        if self.cfg.location == "concat":
+            sample = torch.randn([1, 12, self.crop_size, self.crop_size])
+        else:
+            sample = torch.randn([1, 9, self.crop_size, self.crop_size])
+
         out_shape = self.forward_conv(sample).shape
         self.out_dim = out_shape[1]
         
@@ -277,7 +159,10 @@ class ResNet(nn.Module):
 
     @torch.no_grad()
     def forward_conv(self, obs, flatten=True):
-        obs = obs / 255.0 - 0.5
+        if self.image_channel == 4:
+            obs = torch.cat((obs[:, :3, :, :] / 255.0 - 0.5, obs[:, 3:, :, :]), dim=1)
+        else:
+            obs = obs / 255.0 - 0.5
         time_step = obs.shape[1] // self.image_channel
         obs = obs.view(obs.shape[0], time_step, self.image_channel, obs.shape[-2], obs.shape[-1])
         obs = obs.view(obs.shape[0] * time_step, self.image_channel, obs.shape[-2], obs.shape[-1])
@@ -296,28 +181,21 @@ class ResNet(nn.Module):
         return conv
     
     def forward(self, x, return_feature=False):
-        x = self.get_features(x)
+        if self.frozen_layers.training:
+            self.frozen_layers.eval()
+
+        x = self.forward_conv(x)
 
         if return_feature:
             return x
 
         return self.head(x)
 
-    def get_features(self, x):
-        """get a (batch_size, 2048) feature"""
-        if self.frozen_layers.training:
-            self.frozen_layers.eval()
-        
-        x = self.forward_conv(x)
-
-        return x
-
-
 class PromptAgent:
     def __init__(self, obs_shape, action_shape, device, lr, feature_dim,
                  hidden_dim, critic_target_tau, num_expl_steps,
                  update_every_steps, stddev_schedule, stddev_clip, use_tb, 
-                 prompt, svea_alpha, svea_beta):
+                 prompt):
         self.device = device
         self.critic_target_tau = critic_target_tau
         self.update_every_steps = update_every_steps
@@ -325,8 +203,6 @@ class PromptAgent:
         self.num_expl_steps = num_expl_steps
         self.stddev_schedule = stddev_schedule
         self.stddev_clip = stddev_clip
-        self.svea_alpha = svea_alpha
-        self.svea_beta = svea_beta
         
         print(f'prompt cfg: {prompt}')
         self.prompt_cfg = prompt
@@ -351,8 +227,7 @@ class PromptAgent:
 
         # data augmentation
         self.aug = RandomShiftsAug(pad=4)
-
-        self.segmentor = Segmentor().to(device).eval()
+        self.segmentor = Segmentor().to(device)
 
         self.train()
         self.critic_target.train()
@@ -377,11 +252,26 @@ class PromptAgent:
         self.actor.train(training)
         self.critic.train(training)
 
+    def concat(self, obs):
+        num_dim = torch.Tensor.dim(obs)
+        if num_dim == 4:
+            return torch.cat((obs, self.get_mask(obs)), dim=1)
+        elif num_dim == 3:
+            BC, H, W = obs.shape
+            obs = obs.view(BC // 3, 3, H, W)
+            obs = torch.cat((obs, self.get_mask(obs)), dim=1)
+            obs = obs.view(obs.shape[0] * 4, obs.shape[-2], obs.shape[-1])
+            return obs
+
+    @torch.no_grad
+    def get_mask(self, obs):
+        return self.segmentor(obs)
+
     def act(self, obs, step, eval_mode):
         obs = torch.as_tensor(obs, device=self.device)
 
         if self.prompt_cfg.location == 'concat':
-            obs = torch.cat((obs, self.segmentor(obs)), dim=1)
+            obs = self.concat(obs.float())
 
         obs = self.encoder(obs.unsqueeze(0))
         stddev = utils.schedule(self.stddev_schedule, step)
@@ -405,18 +295,12 @@ class PromptAgent:
             target_V = torch.min(target_Q1, target_Q2)
             target_Q = reward + (discount * target_V)
         
-        if self.svea_alpha == self.svea_beta:
-            obs = torch.cat((obs, aug_obs), dim=0)
-            action = torch.cat((action, action), dim=0)
-            target_Q = torch.cat((target_Q, target_Q), dim=0)
+        obs = torch.cat((obs, aug_obs), dim=0)
+        action = torch.cat((action, action), dim=0)
+        target_Q = torch.cat((target_Q, target_Q), dim=0)
 
-            Q1, Q2 = self.critic(obs, action)
-            critic_loss = (self.svea_alpha + self.svea_beta) * (F.mse_loss(Q1, target_Q) + F.mse_loss(Q2, target_Q))
-        else:
-            Q1, Q2 = self.critic(obs, action)
-            critic_loss = self.svea_alpha * (F.mse_loss(Q1, target_Q) + F.mse_loss(Q2, target_Q))
-            Q1_aug, Q2_aug = self.critic(aug_obs, action)
-            critic_loss += self.svea_beta * (F.mse_loss(Q1_aug, target_Q) + F.mse_loss(Q2_aug, target_Q))
+        Q1, Q2 = self.critic(obs, action)
+        critic_loss = F.mse_loss(Q1, target_Q) + F.mse_loss(Q2, target_Q)
 
         if self.use_tb:
             metrics['critic_target_q'] = target_Q.mean().item()
@@ -464,42 +348,41 @@ class PromptAgent:
             return metrics
 
         batch = next(replay_iter)
-        obs, action, reward, discount, next_obs = utils.to_torch(
-            batch, self.device)
+        obs, action, reward, discount, next_obs = utils.to_torch(batch, self.device)
 
         if self.prompt_cfg.location == 'concat':
-            mask = self.segmentor(obs)
-            next_mask = self.segmentor(next_obs)
+            with torch.no_grad():
+                B, _, _ = obs.shape
+                num_frame = B // 3
+                _obs = torch.cat((obs, next_obs), dim=0)
+                print(_obs.shape)
+                _obs = _obs.view(_obs.shape[0] // 3, 3, _obs.shape[-2], _obs.shape[1])
+                _mask = self.get_mask(_obs)
+                mask = _mask[:num_frame, :, :, :]
+                next_mask = _mask[num_frame:, :, :, :]
 
         obs = self.aug(obs.float())
         original_obs = obs.clone()
         next_obs = self.aug(next_obs.float())
-        aug_obs = utils.random_overlay(original_obs)
+        aug_obs = utils.random_conv(original_obs)
         
-        if self.prompt_cfg.location == 'concat':
-            obs = torch.cat((obs, mask), dim=1)
-            aug_obs = torch.cat((aug_obs, mask), dim=1)
+        # if self.prompt_cfg.location == 'concat':
+        #     obs = self.concat(obs, mask)
+        #     aug_obs = self.concat(aug_obs, mask)
 
         obs = self.encoder(obs)
         aug_obs = self.encoder(aug_obs)
 
         with torch.no_grad():
-            if self.prompt_cfg.location == 'concat':
-                next_obs = torch.cat((next_obs, next_mask), dim=1)
+            # if self.prompt_cfg.location == 'concat':
+            #     next_obs = self.concat(next_obs, next_mask)
             next_obs = self.encoder(next_obs)
 
         if self.use_tb:
             metrics['batch_reward'] = reward.mean().item()
 
-        # update critic
-        metrics.update(
-            self.update_critic(obs, action, reward, discount, next_obs, step, aug_obs))
-
-        # update actor
+        metrics.update(self.update_critic(obs, action, reward, discount, next_obs, step, aug_obs))
         metrics.update(self.update_actor(obs.detach(), step))
-
-        # update critic target
-        utils.soft_update_params(self.critic, self.critic_target,
-                                 self.critic_target_tau)
+        utils.soft_update_params(self.critic, self.critic_target, self.critic_target_tau)
 
         return metrics
