@@ -2,7 +2,6 @@
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
-import hydra
 import numpy as np
 import torch
 import torch.nn as nn
@@ -11,8 +10,6 @@ from torchvision.models import resnet18, resnet34, resnet50
 import torchvision
 from torchvision import transforms
 import utils
-from utils import random_overlay
-
 
 
 class RandomShiftsAug(nn.Module):
@@ -314,7 +311,7 @@ class PIEGAgent:
         obs = self.encoder(obs)
 
         # strong augmentation
-        aug_obs = self.encoder(utils.random_conv(original_obs))
+        aug_obs = self.encoder(utils.random_overlay(original_obs))
 
         with torch.no_grad():
             next_obs = self.encoder(next_obs)

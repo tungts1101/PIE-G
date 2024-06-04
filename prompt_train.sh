@@ -1,8 +1,8 @@
  CUDA_VISIBLE_DEVICES=0 python prompttrain.py \
-                         task=walker_walk \
+                         task=cheetah_run \
                          seed=5 \
                          use_wandb=False \
-                         num_train_frames=1001000
+                         num_train_frames=501000
 
 
 

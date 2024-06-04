@@ -1,8 +1,8 @@
  CUDA_VISIBLE_DEVICES=0 python piegtrain.py \
-                         task=finger_spin \
+                         task=cheetah_run \
                          seed=5 \
                          use_wandb=False \
-                         num_train_frames=1001000
+                         num_train_frames=500100
 
 
 
